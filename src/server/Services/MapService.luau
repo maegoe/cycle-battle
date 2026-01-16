@@ -42,7 +42,7 @@ function MapService.Start()
 		-- 현재 최고 점수와 플레이어 찾기
 		for _, p in ipairs(Players:GetPlayers()) do
 			local ls = p:FindFirstChild("leaderstats")
-			local s = ls and ls:FindFirstChild("Score")
+			local s = ls and ls:FindFirstChild("Score (1000 Win)")
 			if s and s.Value > maxScore then
 				maxScore = s.Value
 				topPlayer = p
@@ -80,7 +80,7 @@ function MapService.Start()
 		leaderstats.Parent = player
 
 		local score = Instance.new("IntValue")
-		score.Name = "Score"
+		score.Name = "Score (1000 Win)"
 		score.Value = 0
 		score.Parent = leaderstats
 
@@ -92,12 +92,56 @@ function MapService.Start()
 		inventory.Name = "Inventory"
 		inventory.Parent = player
 
+		-- 목표 표시 UI 생성
+		task.spawn(function()
+			local playerGui = player:WaitForChild("PlayerGui", 10)
+			if playerGui then
+				local screenGui = Instance.new("ScreenGui")
+				screenGui.Name = "GameHUD"
+				screenGui.ResetOnSpawn = false
+				screenGui.Parent = playerGui
+				
+				local label = Instance.new("TextLabel")
+				label.Name = "TargetLabel"
+				label.Size = UDim2.new(0, 400, 0, 50)
+				label.Position = UDim2.new(0.5, -200, 0, 10)
+				label.BackgroundTransparency = 1
+				label.Font = Enum.Font.GothamBlack
+				label.TextSize = 32
+				label.TextStrokeTransparency = 0
+				label.Parent = screenGui
+				
+				local function updateText()
+					local target = player:GetAttribute("NextTargetIsland")
+					if target == 1 then
+						label.Text = "Next Map: Red Island"
+						label.TextColor3 = Color3.fromRGB(255, 80, 80)
+					elseif target == 2 then
+						label.Text = "Next Map: Blue Island"
+						label.TextColor3 = Color3.fromRGB(80, 80, 255)
+					elseif target == 3 then
+						label.Text = "Next Map: Yellow Island"
+						label.TextColor3 = Color3.fromRGB(255, 255, 80)
+					else
+						label.Text = "준비 중..."
+						label.TextColor3 = Color3.new(1, 1, 1)
+					end
+				end
+				
+				player:GetAttributeChangedSignal("NextTargetIsland"):Connect(updateText)
+				updateText()
+			end
+		end)
+
 		-- 떨어질 때 비명 소리 추가
 		player.CharacterAdded:Connect(function(char)
 			local humanoid = char:WaitForChild("Humanoid")
 			if humanoid then
 				humanoid.WalkSpeed = 48 -- 기본 이동속도 3배
 			end
+			
+			-- 리스폰 시 섬 방문 순서 초기화 (적색 섬에서 시작하므로 Next Map는 노란색)
+			player:SetAttribute("NextTargetIsland", 3)
 
 			local root = char:WaitForChild("HumanoidRootPart", 10)
 			if not root then return end
@@ -150,6 +194,12 @@ function MapService.GenerateMap()
 	local islandRadius = 40
 	local islandHeight = 5
 	
+	local islandColors = {
+		Color3.fromRGB(255, 0, 0),   -- 적색
+		Color3.fromRGB(0, 0, 255),   -- 파란색
+		Color3.fromRGB(255, 255, 0)  -- 노란색
+	}
+	
 	-- 1. 섬 3개 생성 (정삼각형 배치)
 	for i = 1, 3 do
 		local angle = math.rad((i - 1) * 120)
@@ -164,43 +214,62 @@ function MapService.GenerateMap()
 		island.Shape = Enum.PartType.Cylinder
 		island.Anchored = true
 		island.Material = Enum.Material.Grass
-		island.Color = Color3.fromRGB(75, 151, 75) -- 초록색
+		island.Color = islandColors[i]
 		-- Cylinder는 X축이 높이(두께)입니다.
 		island.Size = Vector3.new(islandHeight, islandRadius * 2, islandRadius * 2)
 		-- 눕혀서 평평하게 만들기 위해 Z축으로 90도 회전
 		island.CFrame = CFrame.new(position) * CFrame.Angles(0, 0, math.rad(90))
 		island.Parent = workspace
 
-		-- 섬에 닿으면 점수 획득
+		-- 섬 방문 로직 (적색 -> 노란색 -> 파란색 순서)
 		island.Touched:Connect(function(hit)
 			local player = Players:GetPlayerFromCharacter(hit.Parent)
-			if player then
-				local leaderstats = player:FindFirstChild("leaderstats")
-				local score = leaderstats and leaderstats:FindFirstChild("Score")
-
-				if score then
-					-- 3. 다른 섬을 방문하면 다시 점수를 얻을 수 있도록 수정 (마지막 방문 섬 기록)
-					local lastVisited = player:GetAttribute("LastVisitedIsland")
-					
-					if lastVisited ~= i then
-						player:SetAttribute("LastVisitedIsland", i)
-						score.Value += 10
-					print(string.format("%s님이 %d번 섬을 방문하여 점수를 획득했습니다.", player.Name, i))
+			if not player or not player.Character or player.Character.Humanoid.Health <= 0 then return end
+			
+			local nextTarget = player:GetAttribute("NextTargetIsland") or 3
+			
+			if i == nextTarget then
+				if i == 3 then -- 노란색(3) -> 다음 파란색(2)
+					player:SetAttribute("NextTargetIsland", 2)
+					print(player.Name .. ": 노란색 섬 통과! 다음은 파란색 섬입니다.")
+				elseif i == 2 then -- 파란색(2) -> 다음 적색(1)
+					player:SetAttribute("NextTargetIsland", 1)
+					print(player.Name .. ": 파란색 섬 통과! 다음은 적색 섬입니다.")
+				elseif i == 1 then -- 적색(1) -> 완주 -> 다시 노란색(3)
+					player:SetAttribute("NextTargetIsland", 3)
+					local leaderstats = player:FindFirstChild("leaderstats")
+					local score = leaderstats and leaderstats:FindFirstChild("Score (1000 Win)")
+					if score then 
+						score.Value += 100
+						
+						-- 승리 조건 체크 (1000점 달성)
+						if score.Value >= 1000 then
+							print("🏆 " .. player.Name .. " 님이 1000점을 달성하여 승리했습니다! (게임 초기화)")
+							-- 모든 플레이어 점수 초기화
+							for _, p in ipairs(Players:GetPlayers()) do
+								local ls = p:FindFirstChild("leaderstats")
+								local s = ls and ls:FindFirstChild("Score (1000 Win)")
+								if s then s.Value = 0 end
+							end
+						end
 					end
+					print(player.Name .. ": 코스 완주! 100점 획득.")
 				end
 			end
 		end)
 
 		-- 스폰 포인트 추가
-		local spawn = Instance.new("SpawnLocation")
-		spawn.Name = "SpawnLocation_" .. i
-		spawn.Anchored = true
-		spawn.Size = Vector3.new(16, 1, 16)
-		spawn.Position = position + Vector3.new(0, islandHeight / 2 + 5, 0) -- 스폰 위치 위로 이동
-		spawn.Neutral = true
-		spawn.Transparency = 1
-		spawn.CanCollide = false
-		spawn.Parent = workspace
+		if i == 1 then -- 적색 섬(첫 번째)에만 스폰 생성
+			local spawn = Instance.new("SpawnLocation")
+			spawn.Name = "SpawnLocation_" .. i
+			spawn.Anchored = true
+			spawn.Size = Vector3.new(16, 1, 16)
+			spawn.Position = position + Vector3.new(0, islandHeight / 2 + 5, 0) -- 스폰 위치 위로 이동
+			spawn.Neutral = true
+			spawn.Transparency = 1
+			spawn.CanCollide = false
+			spawn.Parent = workspace
+		end
 	end
 	
 	-- 2. 다리 연결 (1-2, 2-3, 3-1) - 곡선 다리 적용
@@ -405,11 +474,21 @@ function MapService.UseItem(player)
 			if root then
 				local wall = Instance.new("Part")
 				wall.Size = Vector3.new(30, 30, 2)
-				wall.CFrame = root.CFrame * CFrame.new(0, 0, -10)
+				wall.CFrame = root.CFrame * CFrame.new(0, 0, 10)
 				wall.Anchored = true
 				wall.BrickColor = BrickColor.new("Dark stone grey")
 				wall.Parent = workspace
-				Debris:AddItem(wall, 10)
+				
+				-- 8초 후 서서히 투명해지며 사라짐 (총 10초 지속)
+				task.delay(8, function()
+					if wall and wall.Parent then
+						local tween = TweenService:Create(wall, TweenInfo.new(2), {Transparency = 1})
+						tween:Play()
+						tween.Completed:Connect(function()
+							wall:Destroy()
+						end)
+					end
+				end)
 			end
 		end
 	end
