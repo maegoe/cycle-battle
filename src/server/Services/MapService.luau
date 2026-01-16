@@ -96,7 +96,7 @@ function MapService.Start()
 		player.CharacterAdded:Connect(function(char)
 			local humanoid = char:WaitForChild("Humanoid")
 			if humanoid then
-				humanoid.WalkSpeed = 32 -- 기본 이동속도 2배
+				humanoid.WalkSpeed = 48 -- 기본 이동속도 3배
 			end
 
 			local root = char:WaitForChild("HumanoidRootPart", 10)
@@ -138,10 +138,17 @@ function MapService.Start()
 end
 
 function MapService.GenerateMap()
+	-- 기존(기본) 스폰 포인트 제거
+	for _, child in ipairs(workspace:GetChildren()) do
+		if child:IsA("SpawnLocation") then
+			child:Destroy()
+		end
+	end
+
 	local center = Vector3.new(0, 10, 0)
 	local radiusFromCenter = 120
 	local islandRadius = 40
-	local islandHeight = 2
+	local islandHeight = 5
 	
 	-- 1. 섬 3개 생성 (정삼각형 배치)
 	for i = 1, 3 do
@@ -191,25 +198,63 @@ function MapService.GenerateMap()
 		spawn.Size = Vector3.new(16, 1, 16)
 		spawn.Position = position + Vector3.new(0, islandHeight / 2 + 5, 0) -- 스폰 위치 위로 이동
 		spawn.Neutral = true
+		spawn.Transparency = 1
+		spawn.CanCollide = false
 		spawn.Parent = workspace
 	end
 	
-	-- 2. 다리 연결 (1-2, 2-3, 3-1)
+	-- 2. 다리 연결 (1-2, 2-3, 3-1) - 곡선 다리 적용
+	local bridgeSegments = 20 -- 곡선을 구성할 파트 개수 (조정 가능: 높을수록 부드러움)
+	local curvature = 60 -- 곡률 (조정 가능: 클수록 바깥쪽으로 많이 휨)
+
+	local function getBezierPoint(t, p0, p1, p2)
+		return (1 - t)^2 * p0 + 2 * (1 - t) * t * p1 + t^2 * p2
+	end
+
 	for i = 1, 3 do
-		local p1 = islandPositions[i]
+		local p0 = islandPositions[i]
 		local p2 = islandPositions[(i % 3) + 1]
 		
-		local distance = (p1 - p2).Magnitude
-		local midPoint = (p1 + p2) / 2
+		-- 제어점(Control Point) 계산: 두 섬의 중간 지점에서 중심 반대 방향으로 curvature만큼 이동
+		local midPoint = (p0 + p2) / 2
+		local dir = (midPoint - center).Unit
+		local p1 = midPoint + (dir * curvature)
 		
-		local bridge = Instance.new("Part")
-		bridge.Name = "Bridge"
-		bridge.Anchored = true
-		bridge.Material = Enum.Material.Wood
-		bridge.Color = Color3.fromRGB(139, 69, 19) -- 갈색
-		bridge.Size = Vector3.new(20, 1, distance) -- 다리 너비 2배
-		bridge.CFrame = CFrame.lookAt(midPoint, p2)
-		bridge.Parent = workspace
+		for j = 1, bridgeSegments do
+			local t1 = (j - 1) / bridgeSegments
+			local t2 = j / bridgeSegments
+			
+			local startPos = getBezierPoint(t1, p0, p1, p2)
+			local endPos = getBezierPoint(t2, p0, p1, p2)
+			local segDist = (endPos - startPos).Magnitude
+			local segCenter = (startPos + endPos) / 2
+			
+			local bridge = Instance.new("Part")
+			bridge.Name = "BridgeSegment"
+			bridge.Anchored = true
+			bridge.Material = Enum.Material.Wood
+			bridge.Color = Color3.fromRGB(139, 69, 19) -- 갈색
+			bridge.Size = Vector3.new(20, 1, segDist + 0.5) -- 틈새 방지 오버랩
+			bridge.CFrame = CFrame.lookAt(segCenter, endPos)
+			bridge.Parent = workspace
+			
+			-- 다리 난간 생성
+			if (segCenter - p0).Magnitude > islandRadius and (segCenter - p2).Magnitude > islandRadius then
+				local wallHeight = 5
+				local wallThickness = 1
+				local bridgeWidth = 20
+				for _, side in ipairs({-1, 1}) do
+					local wall = Instance.new("Part")
+					wall.Name = "BridgeWall"
+					wall.Anchored = true
+					wall.Material = Enum.Material.Wood
+					wall.Color = Color3.fromRGB(139, 69, 19)
+					wall.Size = Vector3.new(wallThickness, wallHeight, segDist + 0.5)
+					wall.CFrame = bridge.CFrame * CFrame.new(side * (bridgeWidth/2 - wallThickness/2), 0.5 + wallHeight/2, 0)
+					wall.Parent = workspace
+				end
+			end
+		end
 	end
 end
 
