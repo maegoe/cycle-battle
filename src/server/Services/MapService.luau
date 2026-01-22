@@ -7,6 +7,9 @@ local RunService = game:GetService("RunService")
 
 local MapService = {}
 local islandPositions = {} -- GenerateMap과 SpawnItem에서 공유하기 위해 위로 이동
+local isGameRunning = false
+local gameStartTime = 0
+local restartVotes = {}
 
 function MapService.Init()
 	print("[MapService] Generating Map...")
@@ -17,6 +20,13 @@ function MapService.Init()
 		local re = Instance.new("RemoteEvent")
 		re.Name = "UseItem"
 		re.Parent = ReplicatedStorage
+	end
+	
+	-- 재시작 투표를 위한 RemoteEvent 생성
+	if not ReplicatedStorage:FindFirstChild("VoteRestart") then
+		local ve = Instance.new("RemoteEvent")
+		ve.Name = "VoteRestart"
+		ve.Parent = ReplicatedStorage
 	end
 
 	-- 맵(Y=10)에서 60스터드 아래(-50)로 떨어지면 리스폰(사망) 처리
@@ -34,6 +44,32 @@ function MapService.Init()
 end
 
 function MapService.Start()
+	MapService.RestartGame()
+	
+	-- 5분 타이머 체크 루프
+	task.spawn(function()
+		while true do
+			task.wait(1)
+			if isGameRunning then
+				local elapsed = os.time() - gameStartTime
+				local remaining = 300 - elapsed
+				if remaining < 0 then remaining = 0 end
+				
+				local timeText = string.format("%02d:%02d", math.floor(remaining/60), remaining%60)
+				for _, p in ipairs(Players:GetPlayers()) do
+					local gui = p:FindFirstChild("PlayerGui")
+					local hud = gui and gui:FindFirstChild("GameHUD")
+					local tl = hud and hud:FindFirstChild("TimeLabel")
+					if tl then tl.Text = timeText end
+				end
+				
+				if elapsed >= 300 then -- 300초 = 5분
+					MapService.EndGameByTime()
+				end
+			end
+		end
+	end)
+
 	-- 점수 1등에게 이펙트 부여하는 함수
 	local function UpdateTopPlayerEffect()
 		local topPlayer = nil
@@ -111,6 +147,42 @@ function MapService.Start()
 				label.TextStrokeTransparency = 0
 				label.Parent = screenGui
 				
+				-- 남은 시간 표시 UI
+				local timeLabel = Instance.new("TextLabel")
+				timeLabel.Name = "TimeLabel"
+				timeLabel.Size = UDim2.new(0, 100, 0, 40)
+				timeLabel.Position = UDim2.new(0.5, -50, 0, 60)
+				timeLabel.BackgroundTransparency = 1
+				timeLabel.Font = Enum.Font.GothamBold
+				timeLabel.TextSize = 28
+				timeLabel.TextColor3 = Color3.new(1, 1, 1)
+				timeLabel.TextStrokeTransparency = 0
+				timeLabel.Text = "05:00"
+				timeLabel.Parent = screenGui
+				
+				-- 승리 메시지 UI
+				local winLabel = Instance.new("TextLabel")
+				winLabel.Name = "WinLabel"
+				winLabel.Size = UDim2.new(1, 0, 0, 100)
+				winLabel.Position = UDim2.new(0, 0, 0.4, 0)
+				winLabel.BackgroundTransparency = 1
+				winLabel.Font = Enum.Font.GothamBlack
+				winLabel.TextScaled = true
+				winLabel.TextColor3 = Color3.new(1, 0.8, 0)
+				winLabel.TextStrokeTransparency = 0
+				winLabel.Visible = false
+				winLabel.Parent = screenGui
+
+				-- 재시작 투표 버튼
+				local voteBtn = Instance.new("TextButton")
+				voteBtn.Name = "VoteButton"
+				voteBtn.Size = UDim2.new(0, 120, 0, 40)
+				voteBtn.Position = UDim2.new(1, -130, 1, -50) -- 우측 하단으로 이동
+				voteBtn.Text = "Vote Restart"
+				voteBtn.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
+				voteBtn.TextColor3 = Color3.new(1, 1, 1)
+				voteBtn.Parent = screenGui
+				
 				local function updateText()
 					local target = player:GetAttribute("NextTargetIsland")
 					if target == 1 then
@@ -135,6 +207,12 @@ function MapService.Start()
 
 		-- 떨어질 때 비명 소리 추가
 		player.CharacterAdded:Connect(function(char)
+			-- 옵저버인 경우 캐릭터 설정 (투명, 충돌 없음)
+			if player:GetAttribute("IsObserver") then
+				MapService.SetupObserverCharacter(player, char)
+				return
+			end
+
 			local humanoid = char:WaitForChild("Humanoid")
 			if humanoid then
 				humanoid.WalkSpeed = 48 -- 기본 이동속도 3배
@@ -163,13 +241,41 @@ function MapService.Start()
 	end
 
 	Players.PlayerAdded:Connect(onPlayerAdded)
+	
+	-- 이미 접속한 플레이어 처리
 	for _, player in ipairs(Players:GetPlayers()) do
 		onPlayerAdded(player)
 	end
 	
+	-- 게임 도중 접속자 처리 (옵저버)
+	Players.PlayerAdded:Connect(function(player)
+		-- 게임 시작 후 10초가 지났다면 옵저버로 설정
+		if isGameRunning and (os.time() - gameStartTime > 10) then
+			player:SetAttribute("IsObserver", true)
+			print(player.Name .. " 님이 게임 도중 접속하여 옵저버가 되었습니다.")
+		end
+	end)
+	
 	-- 아이템 사용 요청 처리
 	ReplicatedStorage:WaitForChild("UseItem").OnServerEvent:Connect(function(player)
 		MapService.UseItem(player)
+	end)
+	
+	-- 재시작 투표 요청 처리
+	ReplicatedStorage:WaitForChild("VoteRestart").OnServerEvent:Connect(function(player)
+		if not table.find(restartVotes, player) then
+			table.insert(restartVotes, player)
+			local required = MapService.GetRestartThreshold()
+			print(string.format("재시작 투표: %d/%d", #restartVotes, required))
+			
+			-- 투표 현황 알림 (채팅)
+			local msg = string.format("[System] 재시작 투표: %d/%d", #restartVotes, required)
+			-- 간단히 서버 로그로 대체하거나 ChatService를 이용할 수 있음
+			
+			if #restartVotes >= required then
+				MapService.RestartGame()
+			end
+		end
 	end)
 
 	-- 아이템 생성 루프 (10~20초 간격)
@@ -181,7 +287,167 @@ function MapService.Start()
 	end)
 end
 
+function MapService.GetRestartThreshold()
+	local playerCount = #Players:GetPlayers()
+	if playerCount <= 2 then return 1 end -- 1명: 즉시, 2명: 1명 동의
+	if playerCount <= 4 then return 2 end -- 3~4명: 2명 동의
+	if playerCount <= 7 then return 3 end -- 5~7명: 3명 동의
+	return 4 -- 8명 이상: 4명 동의
+end
+
+function MapService.AnnounceWinner(text)
+	isGameRunning = false
+	print(text)
+	for _, p in ipairs(Players:GetPlayers()) do
+		local gui = p:FindFirstChild("PlayerGui")
+		local hud = gui and gui:FindFirstChild("GameHUD")
+		local winLabel = hud and hud:FindFirstChild("WinLabel")
+		if winLabel then
+			winLabel.Text = text
+			winLabel.Visible = true
+		end
+	end
+	
+	task.delay(5, function()
+		MapService.RestartGame()
+	end)
+end
+
+function MapService.RestartGame()
+	print("🔄 게임을 재시작합니다!")
+	isGameRunning = false
+	restartVotes = {}
+	
+	-- 맵 초기화 (기존 섬, 다리, 아이템 제거)
+	for _, child in ipairs(workspace:GetChildren()) do
+		if child.Name:match("Island_") or child.Name:match("Bridge") or child.Name == "ItemBox" or child.Name == "Wall" then
+			child:Destroy()
+		end
+	end
+	
+	MapService.GenerateMap()
+	
+	-- 플레이어 초기화
+	for _, p in ipairs(Players:GetPlayers()) do
+		local ls = p:FindFirstChild("leaderstats")
+		local s = ls and ls:FindFirstChild("Score (1000 Win)")
+		if s then s.Value = 0 end
+		
+		p:SetAttribute("NextTargetIsland", 0) -- 0으로 초기화 (준비 중)
+		p:SetAttribute("IsObserver", nil) -- 옵저버 해제
+		p:LoadCharacter() -- 리스폰
+		
+		-- UI 초기화
+		local gui = p:FindFirstChild("PlayerGui")
+		local hud = gui and gui:FindFirstChild("GameHUD")
+		if hud then
+			local winLabel = hud:FindFirstChild("WinLabel")
+			if winLabel then winLabel.Visible = false end
+		end
+	end
+	
+	task.spawn(function()
+		local redIslandPos = islandPositions[1]
+		
+		-- 5초 카운트다운
+		for i = 5, 1, -1 do
+			for _, p in ipairs(Players:GetPlayers()) do
+				local gui = p:FindFirstChild("PlayerGui")
+				local hud = gui and gui:FindFirstChild("GameHUD")
+				local targetLabel = hud and hud:FindFirstChild("TargetLabel")
+				if targetLabel then
+					targetLabel.Text = "Game Starts in " .. i
+					targetLabel.TextColor3 = Color3.new(1, 1, 1)
+				end
+			end
+			
+			-- 위치 보정 (빨간 섬 밖으로 나가면 복귀)
+			local endTime = os.clock() + 1
+			while os.clock() < endTime do
+				for _, p in ipairs(Players:GetPlayers()) do
+					if p:GetAttribute("IsObserver") then continue end
+					local char = p.Character
+					local root = char and char:FindFirstChild("HumanoidRootPart")
+					if root and redIslandPos then
+						local dist = (Vector3.new(root.Position.X, 0, root.Position.Z) - Vector3.new(redIslandPos.X, 0, redIslandPos.Z)).Magnitude
+						if dist > 40 then
+							root.CFrame = CFrame.new(redIslandPos + Vector3.new(0, 5, 0))
+						end
+					end
+				end
+				task.wait(0.1)
+			end
+		end
+		
+		gameStartTime = os.time()
+		isGameRunning = true
+		
+		-- UI 갱신 (Next Map 표시)
+		for _, p in ipairs(Players:GetPlayers()) do
+			p:SetAttribute("NextTargetIsland", 3) -- 3으로 설정하여 시작 (노란색 목표)
+
+			local gui = p:FindFirstChild("PlayerGui")
+			local hud = gui and gui:FindFirstChild("GameHUD")
+			local targetLabel = hud and hud:FindFirstChild("TargetLabel")
+			if targetLabel then
+				targetLabel.Text = "Next Map: Yellow Island"
+				targetLabel.TextColor3 = Color3.fromRGB(255, 255, 80)
+			end
+		end
+	end)
+end
+
+function MapService.EndGameByTime()
+	local maxScore = -1
+	local winners = {}
+	
+	for _, p in ipairs(Players:GetPlayers()) do
+		local ls = p:FindFirstChild("leaderstats")
+		local s = ls and ls:FindFirstChild("Score (1000 Win)")
+		local score = s and s.Value or 0
+		
+		if score > maxScore then
+			maxScore = score
+			winners = {p}
+		elseif score == maxScore then
+			table.insert(winners, p)
+		end
+	end
+	
+	if maxScore <= 0 then
+		MapService.AnnounceWinner("No winner : (")
+	elseif #winners == 1 then
+		MapService.AnnounceWinner(winners[1].Name .. " Win!")
+	else
+		local names = {}
+		for _, w in ipairs(winners) do
+			table.insert(names, w.Name)
+		end
+		MapService.AnnounceWinner(table.concat(names, ", ") .. " Co-Win!")
+	end
+end
+
+function MapService.SetupObserverCharacter(player, char)
+	task.wait(0.1) -- 캐릭터 로드 대기
+	for _, part in ipairs(char:GetDescendants()) do
+		if part:IsA("BasePart") then
+			part.Transparency = 0.5
+			part.CanCollide = false
+			part.CastShadow = false
+		end
+	end
+	
+	local root = char:WaitForChild("HumanoidRootPart")
+	if root then
+		root.Anchored = false
+	end
+	
+	-- 옵저버는 이름표 숨기기 등 추가 처리 가능
+	print(player.Name .. " (옵저버) 스폰 완료")
+end
+
 function MapService.GenerateMap()
+	islandPositions = {}
 	-- 기존(기본) 스폰 포인트 제거
 	for _, child in ipairs(workspace:GetChildren()) do
 		if child:IsA("SpawnLocation") then
@@ -224,7 +490,7 @@ function MapService.GenerateMap()
 		-- 섬 방문 로직 (적색 -> 노란색 -> 파란색 순서)
 		island.Touched:Connect(function(hit)
 			local player = Players:GetPlayerFromCharacter(hit.Parent)
-			if not player or not player.Character or player.Character.Humanoid.Health <= 0 then return end
+			if not player or not player.Character or player.Character.Humanoid.Health <= 0 or player:GetAttribute("IsObserver") then return end
 			
 			local nextTarget = player:GetAttribute("NextTargetIsland") or 3
 			
@@ -245,12 +511,7 @@ function MapService.GenerateMap()
 						-- 승리 조건 체크 (1000점 달성)
 						if score.Value >= 1000 then
 							print("🏆 " .. player.Name .. " 님이 1000점을 달성하여 승리했습니다! (게임 초기화)")
-							-- 모든 플레이어 점수 초기화
-							for _, p in ipairs(Players:GetPlayers()) do
-								local ls = p:FindFirstChild("leaderstats")
-								local s = ls and ls:FindFirstChild("Score (1000 Win)")
-								if s then s.Value = 0 end
-							end
+							MapService.AnnounceWinner(player.Name .. " Win!")
 						end
 					end
 					print(player.Name .. ": 코스 완주! 100점 획득.")
@@ -384,7 +645,7 @@ function MapService.SpawnRandomItem()
 	itemPart.Touched:Connect(function(hit)
 		if collected then return end
 		local player = Players:GetPlayerFromCharacter(hit.Parent)
-		if player then
+		if player and not player:GetAttribute("IsObserver") then
 			-- 인벤토리 확인 (Folder 사용)
 			local inventory = player:FindFirstChild("Inventory")
 			if not inventory then
@@ -410,6 +671,7 @@ function MapService.SpawnRandomItem()
 end
 
 function MapService.UseItem(player)
+	if player:GetAttribute("IsObserver") then return end -- 옵저버는 아이템 사용 불가
 	local inventory = player:FindFirstChild("Inventory")
 	if not inventory then return end
 	
@@ -454,7 +716,7 @@ function MapService.UseItem(player)
 				
 				bullet.Touched:Connect(function(hit)
 					if hit.Parent == char then return end -- 자기 자신 무시
-					local targetHum = hit.Parent:FindFirstChild("Humanoid")
+					local targetHum = hit.Parent:FindFirstChild("Humanoid") -- 옵저버 체크는 물리 충돌 없음으로 자연스럽게 회피됨
 					if targetHum then
 						local targetRoot = hit.Parent:FindFirstChild("HumanoidRootPart")
 						if targetRoot then
