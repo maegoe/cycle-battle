@@ -459,6 +459,7 @@ function MapService.GenerateMap()
 	local radiusFromCenter = 120
 	local islandRadius = 40
 	local islandHeight = 5
+	local bridgeWidth = 30
 	
 	local islandColors = {
 		Color3.fromRGB(255, 0, 0),   -- 적색
@@ -564,15 +565,14 @@ function MapService.GenerateMap()
 			bridge.Anchored = true
 			bridge.Material = Enum.Material.Wood
 			bridge.Color = Color3.fromRGB(139, 69, 19) -- 갈색
-			bridge.Size = Vector3.new(20, 1, segDist + 0.5) -- 틈새 방지 오버랩
+			bridge.Size = Vector3.new(bridgeWidth, 1, segDist + 0.5) -- 틈새 방지 오버랩
 			bridge.CFrame = CFrame.lookAt(segCenter, endPos)
 			bridge.Parent = workspace
 			
 			-- 다리 난간 생성
 			if (segCenter - p0).Magnitude > islandRadius and (segCenter - p2).Magnitude > islandRadius then
-				local wallHeight = 5
+				local wallHeight = 10
 				local wallThickness = 1
-				local bridgeWidth = 20
 				for _, side in ipairs({-1, 1}) do
 					local wall = Instance.new("Part")
 					wall.Name = "BridgeWall"
@@ -583,6 +583,62 @@ function MapService.GenerateMap()
 					wall.CFrame = bridge.CFrame * CFrame.new(side * (bridgeWidth/2 - wallThickness/2), 0.5 + wallHeight/2, 0)
 					wall.Parent = workspace
 				end
+			end
+		end
+	end
+
+	-- 3. 섬 주위에 벽 생성 (다리 연결 부위 제외)
+	local wallHeight = 10
+	for i = 1, 3 do
+		local currentPos = islandPositions[i]
+		local nextIndex = (i % 3) + 1
+		local prevIndex = (i - 2) % 3 + 1
+		
+		local nextPos = islandPositions[nextIndex]
+		local prevPos = islandPositions[prevIndex]
+		
+		-- Outgoing Bridge Control Point (to Next)
+		local midOut = (currentPos + nextPos) / 2
+		local dirOut = (midOut - center).Unit
+		local p1Out = midOut + (dirOut * curvature)
+		local vecOut = (p1Out - currentPos) * Vector3.new(1,0,1)
+		
+		-- Incoming Bridge Control Point (from Prev)
+		local midIn = (prevPos + currentPos) / 2
+		local dirIn = (midIn - center).Unit
+		local p1In = midIn + (dirIn * curvature)
+		local vecIn = (p1In - currentPos) * Vector3.new(1,0,1)
+		
+		local angleOut = math.atan2(vecOut.Z, vecOut.X)
+		local angleIn = math.atan2(vecIn.Z, vecIn.X)
+		
+		local numSegments = 80
+		local angleStep = (2 * math.pi) / numSegments
+		local gapHalfAngle = math.atan((bridgeWidth / 2 + 2) / islandRadius) -- 다리 너비에 맞춰 각도 계산
+		
+		local function getAngleDiff(a, b)
+			local diff = math.abs(a - b)
+			while diff > math.pi do diff = diff - 2 * math.pi end
+			return math.abs(diff)
+		end
+		
+		for j = 1, numSegments do
+			local angle = (j - 1) * angleStep
+			
+			if getAngleDiff(angle, angleOut) > gapHalfAngle and getAngleDiff(angle, angleIn) > gapHalfAngle then
+				local x = math.cos(angle) * islandRadius
+				local z = math.sin(angle) * islandRadius
+				-- 섬 표면(Y=12.5) 위에 벽(높이 5)을 올리므로 중심 Y는 12.5 + 2.5 = 15
+				local wallPos = currentPos + Vector3.new(x, islandHeight/2 + wallHeight/2, z)
+				
+				local wall = Instance.new("Part")
+				wall.Name = "Island_Wall"
+				wall.Anchored = true
+				wall.Material = Enum.Material.Wood
+				wall.Color = Color3.fromRGB(139, 69, 19)
+				wall.Size = Vector3.new(1, wallHeight, (2 * math.pi * islandRadius / numSegments) + 0.5)
+				wall.CFrame = CFrame.lookAt(wallPos, currentPos) * CFrame.Angles(0, math.rad(90), 0)
+				wall.Parent = workspace
 			end
 		end
 	end
